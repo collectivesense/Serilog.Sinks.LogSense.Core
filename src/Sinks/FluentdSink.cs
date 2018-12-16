@@ -196,7 +196,11 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
 
             localEvent.cs_customer_token = this.settings.customer_token;
             localEvent.source_name = this.settings.source_name;
-            localEvent.cs_pattern_key = this.settings.pattern_key;
+
+            if (!String.IsNullOrEmpty(this.settings.pattern_key))
+            {
+                localEvent.cs_pattern_key = this.settings.pattern_key;
+            }
             if (this.sourceIP != null)
             {
                 localEvent.cs_src_ip = this.sourceIP;

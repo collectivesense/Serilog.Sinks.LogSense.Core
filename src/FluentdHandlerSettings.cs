@@ -28,6 +28,6 @@ namespace Serilog.Sinks.Fluentd.Core
 
         public string source_name { get; set; } = ".NET";
 
-        public string pattern_key { get; set; } = "message";
+        public string pattern_key { get; set; } = "";
     }
 }
