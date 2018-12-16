@@ -40,7 +40,8 @@
             var log = new LoggerConfiguration()
                 .WriteTo.Fluentd(new FluentdHandlerSettings
                 {
-                    Tag = "My.SampleApp"
+                    Tag = "My.SampleApp",
+                    customer_token = ""                  
                 })
                 .CreateLogger();
 
@@ -56,8 +57,11 @@
             };
 
             log.Information("{@info}", info);
-
+            
             DoSomethingThatThrows(log);
+
+            Console.WriteLine("Now giving the app a bit of time to throw exception and quit...");
+
 
             Thread.Sleep(60000);
         }

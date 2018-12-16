@@ -9,7 +9,25 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
         public void Visit(IDictionary<string, object> state, string name, LogEventPropertyValue value)
         {
             var returnValue = this.Visit(value);
-            state[name] = returnValue;
+            switch (value)
+            {
+                case StructureValue structure:
+                case DictionaryValue dictionary:
+                    this.fillAsDictionary(state, name, (IDictionary<string, object>) returnValue);
+                    break;
+                default:
+                    state[name] = returnValue;
+                    break;
+            }
+        }
+
+        private void fillAsDictionary(IDictionary<string, object> state, string name, IDictionary<string, object> dict)
+        {
+            foreach (var entry in dict)
+            {
+                var effectiveName = name + "." + entry.Key;
+                state[effectiveName] = entry.Value;
+            }
         }
 
         private object Visit(LogEventPropertyValue value)

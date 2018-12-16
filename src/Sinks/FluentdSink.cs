@@ -9,6 +9,11 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
     using System.Net.Sockets;
     using System.Text;
     using System.Threading;
+    using System.Net.Security;
+    using System.Runtime.CompilerServices;
+    using System.Runtime.InteropServices;
+    using System.Security.Authentication;
+    using System.Security.Cryptography.X509Certificates;
     using System.Threading.Tasks;
     using MsgPack;
     using MsgPack.Serialization;
@@ -28,18 +33,45 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
 
         private TcpClient client;
 
+        private SslStream sslStream;
+
+        private Stream stream;
+
+        private String sourceIP;
+
         public FluentdSink(FluentdHandlerSettings settings) : base(settings.BatchPostingLimit, settings.BatchingPeriod)
         {
             this.settings = settings;
+
+            if (String.IsNullOrEmpty(this.settings.customer_token) || this.settings.customer_token.Length < 30) 
+            {
+                throw new ArgumentException("Customer token property must be provided with a valid value!");
+            }
+            
             this.serializationContext = new SerializationContext(PackerCompatibilityOptions.PackBinaryAsRaw) { SerializationMethod = SerializationMethod.Map };
             this.visitor = new SerilogVisitor();
+            this.sourceIP = this.DetermineIP();
+        }
+
+        private string DetermineIP()
+        {
+            using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
+            {
+                socket.Connect("8.8.8.8", 65530);
+                IPEndPoint endPoint = socket.LocalEndPoint as IPEndPoint;
+                var localIP = endPoint.Address.ToString();
+                SelfLog.WriteLine("Determined source IP address to: {0}", localIP);
+                return localIP;
+            }
+
+            return null;
         }
 
         protected override async Task EmitBatchAsync(IEnumerable<LogEvent> events)
         {
             await this.Send(events);
         }
-
+        
         private async Task Send(IEnumerable<LogEvent> messages)
         {
             foreach (var logEvent in messages)
@@ -69,10 +101,13 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
                         {
                             await this.Connect();
                             await this.semaphore.WaitAsync();
-                            var stream = this.client.GetStream();
+                            await this.PrepareStream();
+                            
                             var data = sw.ToArray();
+
                             await stream.WriteAsync(data, 0, data.Length);
                             await stream.FlushAsync();
+                            
                             break;
                         }
                         catch (Exception ex)
@@ -98,6 +133,8 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
                 {
                     this.client.Dispose();
                     this.client = null;
+                    this.stream = null;
+                    this.sslStream = null;
                 }
                 else
                 {
@@ -114,13 +151,60 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
             await this.client.ConnectAsync(this.settings.Host, this.settings.Port);
         }
 
+
+        private async Task PrepareStream()
+        {
+            if (this.stream != null)
+            {
+                return;
+            }
+            
+            if (this.settings.UsingSsl)
+            {
+                this.sslStream = new SslStream(
+                    this.client.GetStream(),
+                    false);
+                                
+                try 
+                {
+                    this.sslStream.AuthenticateAsClient(this.settings.Host, null, SslProtocols.Tls12, true);
+                } 
+                catch (AuthenticationException e)
+                {
+                    SelfLog.WriteLine("Exception: {0}", e.Message);
+                    if (e.InnerException != null)
+                    {
+                        SelfLog.WriteLine("Inner exception: {0}", e.InnerException.Message);
+                    }
+                    SelfLog.WriteLine ("Authentication failed - closing the connection.");
+                    this.Disconnect();
+                    
+                    return;
+                }
+
+                this.stream = this.sslStream;
+            }
+            else
+            {
+                this.stream = this.client.GetStream();
+            }
+        }
+        
         private void FormatwithMsgPack(LogEvent logEvent, Packer packer)
         {
             dynamic localEvent = new ExpandoObject();
-            localEvent.timeStamp = logEvent.Timestamp.UtcDateTime.ToString("O");
-            localEvent.ticks = logEvent.Timestamp.UtcTicks;
-            localEvent.msgTmpl = logEvent.MessageTemplate.Text;
-            localEvent.msg = logEvent.RenderMessage();
+
+            localEvent.cs_customer_token = this.settings.customer_token;
+            localEvent.source_name = this.settings.source_name;
+            localEvent.cs_pattern_key = this.settings.pattern_key;
+            if (this.sourceIP != null)
+            {
+                localEvent.cs_src_ip = this.sourceIP;
+            }
+
+            localEvent.time_stamp = new DateTimeOffset(logEvent.Timestamp.UtcDateTime).ToUnixTimeMilliseconds();
+            localEvent.message_template = logEvent.MessageTemplate.Text;
+            localEvent.message = logEvent.RenderMessage();
             localEvent.level = logEvent.Level.ToString();
 
             if (logEvent.Exception != null)
@@ -185,8 +269,11 @@ namespace Serilog.Sinks.Fluentd.Core.Sinks
 
         private void Disconnect()
         {
+            this.sslStream?.Dispose();
             this.client?.Dispose();
             this.client = null;
+            this.sslStream = null;
+            this.stream = null;
         }
 
         protected override void Dispose(bool disposing)
